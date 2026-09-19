@@ -1,0 +1,10 @@
+{
+  "name": "pi-auto-thinking",
+  "version": "1.0.0",
+  "description": "Auto thinking level for pi — a cheap side-model classifies each prompt's difficulty and sets the reasoning effort per turn, like oh-my-pi's `auto` mode.",
+  "keywords": ["pi-package", "pi", "coding-agent", "reasoning", "thinking"],
+  "license": "MIT",
+  "pi": {
+    "extensions": ["./extensions"]
+  }
+}
