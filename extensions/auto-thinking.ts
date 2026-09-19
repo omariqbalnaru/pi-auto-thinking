@@ -6,11 +6,11 @@
  * it before the agent loop starts.
  *
  * Classifier model resolution (first match wins):
- *   1. $PI_AUTO_THINKING_MODEL  (format: "provider/model-id" or bare "model-id")
- *   2. Built-in default: ollama/nemotron-3-nano:30b-cloud (Ollama Cloud, proxied
- *      via the local daemon; registered in ~/.pi/agent/models.json)
- *   3. Heuristic: cheapest/smallest model in the catalogue (flash/haiku/mini...)
- *   4. The session's current model
+ *   1. $PI_AUTO_THINKING_MODEL  (format: "provider/model-id" or bare "model-id"; unset
+ *      here on purpose — the classifier model is machine-specific, so it must be
+ *      pinned per environment to an id registered in the local model registry)
+ *   2. Heuristic: cheapest/smallest model in the catalogue (flash/haiku/mini...)
+ *   3. The session's current model
  *
  * Toggle with /autothink on|off. On classification failure the current
  * thinking level is left untouched (never breaks the turn).
@@ -38,9 +38,6 @@ const CHEAP_MODEL_HINTS = [
 	"turbo",
 ];
 
-/** Default classifier: NVIDIA Nemotron 3 Nano via Ollama Cloud (zero per-token cost). */
-const DEFAULT_CLASSIFIER_MODEL = "ollama/nemotron-3-nano:30b-cloud";
-
 /** Nemotron 3 Nano is a reasoning model — its trace is separate from content,
  * but the budget must cover the trace or the keyword never lands. */
 const CLASSIFIER_MAX_TOKENS = 4096;
@@ -62,19 +59,13 @@ function pickCheapModel(available: unknown[], current: unknown): unknown {
 		if (hit) return hit;
 	}
 
-	// 2. Built-in default: Nemotron 3 Nano via Ollama Cloud
-	const defaultHit = available.find(
-		(m: any) => `${m.provider}/${m.id}` === DEFAULT_CLASSIFIER_MODEL || m.id === DEFAULT_CLASSIFIER_MODEL,
-	);
-	if (defaultHit) return defaultHit;
-
-	// 3. Heuristic: cheapest-sounding model that isn't the current one
+	// 2. Heuristic: cheapest-sounding model that isn't the current one
 	for (const hint of CHEAP_MODEL_HINTS) {
 		const hit = available.find((m: any) => (m.id as string).toLowerCase().includes(hint));
 		if (hit) return hit;
 	}
 
-	// 4. Fall back to the session model
+	// 3. Fall back to the session model
 	return current;
 }
 
