@@ -20,10 +20,12 @@ import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 type Level = "minimal" | "low" | "medium" | "high" | "xhigh" | "max";
 
 const CLASSIFIER_SYSTEM_PROMPT = `You are a routing classifier for a coding agent. Given a user prompt, rate the coding difficulty it requires and reply with EXACTLY ONE word:
-- low: trivial questions, single-file tweaks, renames, explanations, simple edits, "what does this do"
-- medium: normal tasks — implement a small feature, fix a bug with clear cause, write a small script, multi-file changes with obvious steps
-- high: hard tasks — tricky debugging, architecture changes, performance work, multi-step refactors, subtle logic
-- xhigh: very hard — deep debugging of unknown causes, algorithmically complex work, large cross-cutting redesigns, concurrency-heavy changes
+- low: pure Q&A — "what does this do", "explain X", "which file handles Y". Reading only, zero code changes
+- medium: ANY code change not clearly hard — small features, bug fixes, renames, single or multi-file edits
+- high: tricky debugging, architecture changes, performance work, multi-step refactors, subtle logic, anything touching concurrency or data consistency
+- xhigh: deep debugging of unknown causes, algorithmically complex work, large cross-cutting redesigns, concurrency-heavy changes
+
+When unsure between two levels, pick the HIGHER one.
 
 Reply with exactly one word: low, medium, high, or xhigh. No other text.`;
 
@@ -42,7 +44,18 @@ const CHEAP_MODEL_HINTS = [
  * but the budget must cover the trace or the keyword never lands. */
 const CLASSIFIER_MAX_TOKENS = 4096;
 
+/** Classifier latency ceiling — abort and fall back rather than delay turn start. */
+const CLASSIFIER_TIMEOUT_MS = 4000;
+
+/** Pasted code/errors swamp the classifier's window and skew the verdict toward
+ * low (it judges the dump, not the ask). Fenced blocks are the dominant form. */
+function preprocessPrompt(text: string): string {
+	return text.replace(/```[\s\S]*?```/g, " [code block] ").slice(0, 4000);
+}
+
 let enabled = true;
+/** Last successful classification — sticky fallback when the classifier fails. */
+let lastResolved: Level | undefined;
 
 function pickCheapModel(available: unknown[], current: unknown): unknown {
 	// 1. Explicit override via env: "provider/model-id" or bare "model-id"
@@ -85,7 +98,7 @@ async function classify(
 			messages: [
 				{
 					role: "user",
-					content: `Classify this prompt:\n\n${promptText.slice(0, 4000)}`,
+				content: `Classify this prompt:\n\n${preprocessPrompt(promptText)}`,
 					timestamp: Date.now(),
 				},
 			],
@@ -143,23 +156,34 @@ export default function (pi: ExtensionAPI) {
 		if (!ctx.model?.reasoning) return;
 
 		const promptText = event.prompt?.trim() ?? "";
-		// Trivial prompts skip the classifier call entirely (mirrors omp's Low floor)
+		// Trivial prompts skip the classifier call entirely; medium floor so terse
+		// hard prompts ("fix deadlock in plan refresh") still get thinking budget
 		if (promptText.split(/\s+/).length < 6) {
-			pi.setThinkingLevel("low");
-			ctx.ui.setStatus("auto-think", "auto: low (short prompt)");
+			pi.setThinkingLevel("medium");
+			ctx.ui.setStatus("auto-think", "auto: medium (short prompt)");
 			return;
 		}
 
 		ctx.ui.setStatus("auto-think", "auto: classifying…");
+		let timer: ReturnType<typeof setTimeout> | undefined;
 		try {
-			const level = await classify(promptText, ctx);
-			if (level) {
-				pi.setThinkingLevel(level);
-				ctx.ui.setStatus("auto-think", `auto: ${level}`);
-			}
-			// On undefined (classifier failed) keep the current level — never break the turn
+			const timeout = new Promise<undefined>((resolve) => {
+				timer = setTimeout(() => resolve(undefined), CLASSIFIER_TIMEOUT_MS);
+			});
+			const level = await Promise.race([classify(promptText, ctx), timeout]);
+			const resolved = level ?? lastResolved ?? "medium";
+			if (level) lastResolved = level;
+			pi.setThinkingLevel(resolved);
+			ctx.ui.setStatus(
+				"auto-think",
+				level ? `auto: ${resolved}` : `auto: ${resolved} (classifier failed)`,
+			);
 		} catch {
-			// keep current level
+			const resolved = lastResolved ?? "medium";
+			pi.setThinkingLevel(resolved);
+			ctx.ui.setStatus("auto-think", `auto: ${resolved} (classifier failed)`);
+		} finally {
+			clearTimeout(timer);
 		}
 	});
 }
